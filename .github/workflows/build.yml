@@ -23,7 +23,7 @@ jobs:
             -configuration Release -sdk iphoneos -destination 'generic/platform=iOS' \
             -derivedDataPath build \
             CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="" \
-            build | tee build.log | grep -E "error:|warning: unre|BUILD (SUCCEEDED|FAILED)" || true
+            build | tee build.log | grep -E "error:|warning: unre|BUILD (SUCCEEDED|FAILED)"
           test -d build/Build/Products/Release-iphoneos/TVMirror.app
 
       - name: Package IPA
