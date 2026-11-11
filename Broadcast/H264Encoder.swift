@@ -26,8 +26,9 @@ final class H264Encoder {
 
         init(_ orientation: CGImagePropertyOrientation) {
             switch orientation {
-            case .right, .rightMirrored: self = .clockwise
-            case .left, .leftMirrored: self = .counterClockwise
+            // Tested on iPhone 13 / iOS 27: ReplayKit's .right needs a counter-clockwise turn.
+            case .right, .rightMirrored: self = .counterClockwise
+            case .left, .leftMirrored: self = .clockwise
             case .down, .downMirrored: self = .halfTurn
             default: self = .none
             }
