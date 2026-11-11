@@ -1,20 +1,48 @@
 import CoreMedia
 import CoreVideo
+import ImageIO
 import VideoToolbox
 
-/// Scales ReplayKit frames down and encodes them to H.264 (Annex B) in hardware.
-/// Re-encodes the last frame when the screen is static so the TV never starves.
+/// Turns ReplayKit frames upright, fits them into one fixed 16:9 frame and encodes them to
+/// H.264 (Annex B) in hardware. Re-encodes the last frame when the screen is static so the TV never starves.
 final class H264Encoder {
     /// (annexB access unit, capture time in seconds, isKeyFrame) — called on a VideoToolbox thread
     var onFrame: (([UInt8], Double, Bool) -> Void)?
+
+    /// How a ReplayKit buffer has to be turned to be upright.
+    private enum Turn {
+        case none, clockwise, counterClockwise, halfTurn
+
+        var angle: CFString? {
+            switch self {
+            case .none: return nil
+            case .clockwise: return kVTRotation_CW90
+            case .counterClockwise: return kVTRotation_CCW90
+            case .halfTurn: return kVTRotation_180
+            }
+        }
+
+        var isSideways: Bool { self == .clockwise || self == .counterClockwise }
+
+        init(_ orientation: CGImagePropertyOrientation) {
+            switch orientation {
+            case .right, .rightMirrored: self = .clockwise
+            case .left, .leftMirrored: self = .counterClockwise
+            case .down, .downMirrored: self = .halfTurn
+            default: self = .none
+            }
+        }
+    }
 
     private let queue = DispatchQueue(label: "tvmirror.encoder")
     private let lock = NSLock()
     private var pending = 0
     private var session: VTCompressionSession?
     private var transfer: VTPixelTransferSession?
-    private var pool: CVPixelBufferPool?
-    private var outW = 0, outH = 0
+    private var rotation: VTPixelRotationSession?
+    private var canvasPool: CVPixelBufferPool?   // outputWidth x outputHeight: what the TV gets
+    private var sidewaysPool: CVPixelBufferPool? // outputHeight x outputWidth: landscape content before turning
+    private var poolFormat: OSType = 0
     private var lastFrame: CVPixelBuffer?
     private var lastEncode: Double = 0
     private var forceKey = true
@@ -30,16 +58,16 @@ final class H264Encoder {
 
     func requestKeyFrame() { queue.async { self.forceKey = true } }
 
-    func submit(_ src: CVPixelBuffer) {
+    func submit(_ src: CVPixelBuffer, orientation: CGImagePropertyOrientation) {
         lock.lock()
         if pending >= 2 { lock.unlock(); return } // encoder busy: drop frame
         pending += 1
         lock.unlock()
         queue.async {
             defer { self.lock.lock(); self.pending -= 1; self.lock.unlock() }
-            guard let scaled = self.scale(src) else { return }
-            self.lastFrame = scaled
-            self.encode(scaled)
+            guard let frame = self.render(src, turn: Turn(orientation)) else { return }
+            self.lastFrame = frame
+            self.encode(frame)
         }
     }
 
@@ -62,48 +90,50 @@ final class H264Encoder {
         encode(frame)
     }
 
-    private func scale(_ src: CVPixelBuffer) -> CVPixelBuffer? {
-        let w = CVPixelBufferGetWidth(src), h = CVPixelBufferGetHeight(src)
-        let factor = min(1.0, Double(Config.maxLongEdge) / Double(max(w, h)))
-        let ow = Int(Double(w) * factor) & ~1
-        let oh = Int(Double(h) * factor) & ~1
-        if session == nil || ow != outW || oh != outH {
-            setup(width: ow, height: oh, format: CVPixelBufferGetPixelFormatType(src))
-        }
-        guard let pool, let transfer else { return nil }
-        var dst: CVPixelBuffer?
-        guard CVPixelBufferPoolCreatePixelBuffer(nil, pool, &dst) == kCVReturnSuccess, let dst else { return nil }
-        guard VTPixelTransferSessionTransferImage(transfer, from: src, to: dst) == noErr else { return nil }
-        return dst
+    /// Fits the screen into the fixed output frame (black bars where the shapes differ) and turns it
+    /// upright. Scaling happens first, so only the small frame gets rotated.
+    private func render(_ src: CVPixelBuffer, turn: Turn) -> CVPixelBuffer? {
+        let format = CVPixelBufferGetPixelFormatType(src)
+        if format != poolFormat { setUp(format: format) }
+        if session == nil { makeSession() }
+        guard let transfer, let rotation, let canvasPool, let sidewaysPool else { return nil }
+
+        guard let fitted = Self.buffer(from: turn.isSideways ? sidewaysPool : canvasPool),
+              VTPixelTransferSessionTransferImage(transfer, from: src, to: fitted) == noErr else { return nil }
+        guard let angle = turn.angle else { return fitted }
+
+        guard let upright = Self.buffer(from: canvasPool) else { return nil }
+        VTSessionSetProperty(rotation, key: kVTPixelRotationPropertyKey_Rotation, value: angle)
+        guard VTPixelRotationSessionRotateImage(rotation, from: fitted, to: upright) == noErr else { return nil }
+        return upright
     }
 
-    private func setup(width: Int, height: Int, format: OSType) {
-        if let session { VTCompressionSessionInvalidate(session) }
-        session = nil
-        pool = nil
+    private func setUp(format: OSType) {
+        poolFormat = format
+        canvasPool = Self.pool(width: Config.outputWidth, height: Config.outputHeight, format: format)
+        sidewaysPool = Self.pool(width: Config.outputHeight, height: Config.outputWidth, format: format)
         lastFrame = nil
-        outW = width
-        outH = height
 
         if transfer == nil {
             var t: VTPixelTransferSession?
             VTPixelTransferSessionCreate(allocator: nil, pixelTransferSessionOut: &t)
+            if let t {
+                // Keep the aspect ratio and fill the rest of the frame with black.
+                VTSessionSetProperty(t, key: kVTPixelTransferPropertyKey_ScalingMode, value: kVTScalingMode_Letterbox)
+            }
             transfer = t
         }
+        if rotation == nil {
+            var r: VTPixelRotationSession?
+            VTPixelRotationSessionCreate(allocator: nil, pixelRotationSessionOut: &r)
+            rotation = r
+        }
+    }
 
-        let attrs: [String: Any] = [
-            kCVPixelBufferPixelFormatTypeKey as String: format,
-            kCVPixelBufferWidthKey as String: width,
-            kCVPixelBufferHeightKey as String: height,
-            kCVPixelBufferIOSurfacePropertiesKey as String: [String: Any](),
-        ]
-        var p: CVPixelBufferPool?
-        CVPixelBufferPoolCreate(nil, nil, attrs as CFDictionary, &p)
-        pool = p
-
+    private func makeSession() {
         var s: VTCompressionSession?
         let status = VTCompressionSessionCreate(
-            allocator: nil, width: Int32(width), height: Int32(height),
+            allocator: nil, width: Int32(Config.outputWidth), height: Int32(Config.outputHeight),
             codecType: kCMVideoCodecType_H264, encoderSpecification: nil,
             imageBufferAttributes: nil, compressedDataAllocator: nil,
             outputCallback: nil, refcon: nil, compressionSessionOut: &s)
@@ -120,7 +150,25 @@ final class H264Encoder {
         VTCompressionSessionPrepareToEncodeFrames(s)
         session = s
         forceKey = true
-        log.info("Encoder ready \(width)x\(height)")
+        log.info("Encoder ready \(Config.outputWidth)x\(Config.outputHeight)")
+    }
+
+    private static func pool(width: Int, height: Int, format: OSType) -> CVPixelBufferPool? {
+        let attrs: [String: Any] = [
+            kCVPixelBufferPixelFormatTypeKey as String: format,
+            kCVPixelBufferWidthKey as String: width,
+            kCVPixelBufferHeightKey as String: height,
+            kCVPixelBufferIOSurfacePropertiesKey as String: [String: Any](),
+        ]
+        var p: CVPixelBufferPool?
+        CVPixelBufferPoolCreate(nil, nil, attrs as CFDictionary, &p)
+        return p
+    }
+
+    private static func buffer(from pool: CVPixelBufferPool) -> CVPixelBuffer? {
+        var b: CVPixelBuffer?
+        guard CVPixelBufferPoolCreatePixelBuffer(nil, pool, &b) == kCVReturnSuccess else { return nil }
+        return b
     }
 
     private func encode(_ pixelBuffer: CVPixelBuffer) {

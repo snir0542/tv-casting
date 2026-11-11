@@ -6,7 +6,9 @@ enum Config {
 
     static let avTransportService = "urn:schemas-upnp-org:service:AVTransport:1"
     static let httpPort: UInt16 = 8090
-    static let maxLongEdge = 1280          // video is scaled so its long edge is at most this
+    static let outputWidth = 1280          // every frame sent to the TV is this size (16:9);
+    static let outputHeight = 720          // the screen is fitted in with black bars
+    static let maxBacklogFrames = 20       // ~0.7s queued for a slow TV: drop and resync on next keyframe
     static let bitrate = 4_000_000
     static let fps = 30
     static let ptsDelay90k: UInt64 = 45_000 // 0.5s decoder buffer (90 kHz units)

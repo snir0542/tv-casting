@@ -1,5 +1,6 @@
 import CoreMedia
 import Foundation
+import ImageIO
 import ReplayKit
 
 /// ReplayKit broadcast extension: screen -> H.264 -> MPEG-TS -> HTTP -> TV (via DLNA).
@@ -43,7 +44,15 @@ final class SampleHandler: RPBroadcastSampleHandler {
 
     override func processSampleBuffer(_ sampleBuffer: CMSampleBuffer, with sampleBufferType: RPSampleBufferType) {
         guard sampleBufferType == .video, let pixelBuffer = CMSampleBufferGetImageBuffer(sampleBuffer) else { return }
-        encoder?.submit(pixelBuffer)
+        encoder?.submit(pixelBuffer, orientation: Self.orientation(of: sampleBuffer))
+    }
+
+    /// ReplayKit always delivers the screen as a portrait buffer; this attachment says how the phone is held.
+    private static func orientation(of sampleBuffer: CMSampleBuffer) -> CGImagePropertyOrientation {
+        guard let value = CMGetAttachment(sampleBuffer, key: RPVideoSampleOrientationKey as CFString,
+                                          attachmentModeOut: nil) as? NSNumber,
+              let orientation = CGImagePropertyOrientation(rawValue: value.uint32Value) else { return .up }
+        return orientation
     }
 
     override func broadcastFinished() {

@@ -48,7 +48,7 @@ final class StreamServer {
                 guard isKey else { continue }
                 client.synced = true
             }
-            if client.inFlight > 45 {        // ~1.5s backlog: drop and resync on next keyframe
+            if client.inFlight > Config.maxBacklogFrames { // TV fell behind: drop and resync on next keyframe
                 client.synced = false
                 onNeedKeyFrame?()
                 continue
