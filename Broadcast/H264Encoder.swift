@@ -104,7 +104,7 @@ final class H264Encoder {
 
         guard let upright = Self.buffer(from: canvasPool) else { return nil }
         VTSessionSetProperty(rotation, key: kVTPixelRotationPropertyKey_Rotation, value: angle)
-        guard VTPixelRotationSessionRotateImage(rotation, from: fitted, to: upright) == noErr else { return nil }
+        guard VTPixelRotationSessionRotateImage(rotation, fitted, upright) == noErr else { return nil }
         return upright
     }
 
@@ -125,7 +125,7 @@ final class H264Encoder {
         }
         if rotation == nil {
             var r: VTPixelRotationSession?
-            VTPixelRotationSessionCreate(allocator: nil, pixelRotationSessionOut: &r)
+            VTPixelRotationSessionCreate(nil, &r)
             rotation = r
         }
     }
