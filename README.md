@@ -1,7 +1,7 @@
 # TV Mirror — iPhone → LG TV (2017) via DLNA
 
-The iPhone streams its screen (ReplayKit → H.264 → MPEG-TS over HTTP) and tells the TV
-(UPnP AVTransport) to play that URL. No PC is needed once it is installed. Video only (no audio).
+The iPhone streams its screen and app audio (ReplayKit → H.264 + AAC → MPEG-TS over HTTP) and tells
+the TV (UPnP AVTransport) to play that URL. No PC is needed once it is installed. The microphone is not sent.
 
 ## 1. Test the TV (Windows, ~10 min)
 Requirements: Python 3, FFmpeg in PATH (`winget install Gyan.FFmpeg`).
@@ -38,7 +38,7 @@ The signature expires after 7 days: reinstall with Sideloadly.
 `idevicesyslog | findstr tvmirror` (libimobiledevice for Windows), or the error shown by iOS when the broadcast stops.
 
 ## Structure
-- `Broadcast/` — the extension: `H264Encoder`, `TSMuxer`, `StreamServer` (HTTP), `SampleHandler`
+- `Broadcast/` — the extension: `H264Encoder`, `AACEncoder`, `TSMuxer`, `StreamServer` (HTTP), `SampleHandler`
 - `Shared/` — `Config`, `DLNAController` (SOAP)
 - `App/` — UI with the broadcast picker
 - `tools/tv_test.py` — TV test from a PC

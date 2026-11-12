@@ -1,9 +1,10 @@
 import Foundation
 
-/// Minimal MPEG-TS muxer: one H.264 stream, PAT/PMT, PCR on every frame.
+/// Minimal MPEG-TS muxer: one H.264 and one AAC (ADTS) stream, PAT/PMT, PCR on every video frame.
 struct TSMuxer {
     private let pmtPID: UInt16 = 0x1000
     private let videoPID: UInt16 = 0x0100
+    private let audioPID: UInt16 = 0x0101
     private var counters: [UInt16: UInt8] = [:]
     private var framesSincePSI = 0
 
@@ -18,6 +19,7 @@ struct TSMuxer {
                 0xE0 | UInt8(videoPID >> 8), UInt8(videoPID & 0xFF), // PCR PID
                 0xF0, 0x00,                                         // program info length
                 0x1B, 0xE0 | UInt8(videoPID >> 8), UInt8(videoPID & 0xFF), 0xF0, 0x00, // H.264
+                0x0F, 0xE0 | UInt8(audioPID >> 8), UInt8(audioPID & 0xFF), 0xF0, 0x00, // AAC (ADTS)
             ]
             out += packets(pid: 0, payload: psi(tableID: 0x00, ext: 1, body: pat), pcr: nil, randomAccess: false)
             out += packets(pid: pmtPID, payload: psi(tableID: 0x02, ext: 1, body: pmt), pcr: nil, randomAccess: false)
@@ -30,6 +32,17 @@ struct TSMuxer {
         pes += annexB
         out += packets(pid: videoPID, payload: pes, pcr: pcr90k, randomAccess: isKey)
         return out
+    }
+
+    /// - Parameters:
+    ///   - adts: one AAC frame with its ADTS header
+    ///   - pts90k: on the same clock as the video PTS
+    mutating func muxAudio(adts: [UInt8], pts90k: UInt64) -> [UInt8] {
+        let length = 3 + 5 + adts.count // PES header flags + PTS + payload (audio PES needs a real length)
+        var pes: [UInt8] = [0x00, 0x00, 0x01, 0xC0, UInt8(length >> 8), UInt8(length & 0xFF), 0x80, 0x80, 0x05]
+        pes += ptsBytes(pts90k)
+        pes += adts
+        return packets(pid: audioPID, payload: pes, pcr: nil, randomAccess: false)
     }
 
     private mutating func packets(pid: UInt16, payload: [UInt8], pcr: UInt64?, randomAccess: Bool) -> [UInt8] {

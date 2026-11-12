@@ -12,6 +12,8 @@ enum Config {
     static let bitrate = 4_000_000
     static let fps = 30
     static let ptsDelay90k: UInt64 = 45_000 // 0.5s decoder buffer (90 kHz units)
+    static let audioSampleRate: Double = 48_000 // app audio is sent as AAC-LC stereo at this rate
+    static let audioBitrate = 128_000
 
     static let dlnaFeatures = "DLNA.ORG_OP=00;DLNA.ORG_CI=0;DLNA.ORG_FLAGS=01700000000000000000000000000000"
     static let protocolInfo = "http-get:*:video/mpeg:" + dlnaFeatures

@@ -41,21 +41,23 @@ final class StreamServer {
         }
     }
 
-    /// Must be called on `queue`.
-    func broadcast(_ ts: Data, isKey: Bool) {
+    /// Must be called on `queue`. Audio follows the video's sync state (nothing before the first
+    /// keyframe, nothing while resyncing) but does not count toward the video backlog.
+    func broadcast(_ ts: Data, isKey: Bool, isAudio: Bool = false) {
         for client in clients.values where client.streaming {
             if !client.synced {
                 guard isKey else { continue }
                 client.synced = true
             }
-            if client.inFlight > Config.maxBacklogFrames { // TV fell behind: drop and resync on next keyframe
+            if !isAudio && client.inFlight > Config.maxBacklogFrames { // TV fell behind: drop and resync on next keyframe
                 client.synced = false
                 onNeedKeyFrame?()
                 continue
             }
-            client.inFlight += 1
+            let counted = !isAudio
+            if counted { client.inFlight += 1 }
             client.conn.send(content: ts, completion: .contentProcessed { [weak client] _ in
-                client?.inFlight -= 1
+                if counted { client?.inFlight -= 1 }
             })
         }
     }
