@@ -36,13 +36,18 @@ Rules the TV's browser follows (all measured):
 1. **Every fMP4 fragment must start with a keyframe.** Fragments cut mid-GOP fail with
    `MEDIA_ERR_SRC_NOT_SUPPORTED` (code 4).
 2. **It starts or resumes playback only with more than 3 s buffered ahead.** Exactly 3.0 s never
-   starts; 6 s starts at once. This applies after every start, seek and underrun.
+   starts; 3.5 s, 4 s and 5 s start at once. This applies after every start, seek and underrun.
 3. **Once playing, a few hundred ms of buffer is enough.**
 4. **`playbackRate` is ignored** (reported as set, plays at 1×). Seeking re-triggers rule 2.
    So the delay cannot be reduced after the start, only set at the start.
 5. **Full screen needs a user gesture.** Without it the page gets 1920×909 of 1920×1080. A "click"
    through the TV's pointer socket arrives as `keydown` 13, and `requestFullscreen()` then works.
 6. After an underrun with audio, the TV's player once hung for good (position frozen, data buffered).
+7. H.264 Main with CABAC at 1920×1080 and 8 Mbps plays fine (pre-build check 1).
+8. The splice is fragile. If the first live fragment arrives after the filler runs out, the TV
+   rebuffers for >3 s. So the first GOP after a splice is only 5 frames (~0.17 s), not 15.
+9. From a Wi-Fi PC at 8 Mbps, hiccups of 1–3 s happened every ~15 s. The lead/bitrate adaptation
+   has to settle these. Expect ~1–2 s in practice, depending on the Wi-Fi.
 
 The trick that gives ~1 s delay: send more than 3 s of filler at once so the TV starts immediately,
 then splice the live stream in so it starts just before the filler runs out, with timestamps
@@ -95,7 +100,8 @@ No App Group is needed: the extension pairs with the TV itself and keeps its own
 7. The phone forces a keyframe on the next 30 fps slot and maps that slot to the video filler end.
    It re-anchors the audio so its timeline continues exactly at the audio filler end (within one AAC
    frame, ≤ 21 ms). Live fragments follow:
-   - Video: one fragment per 15 frames (0.5 s), sent as soon as the 15th frame is encoded.
+   - Video: the first GOP after a splice is 5 frames, then one fragment per 15 frames (0.5 s). Each is
+     sent as soon as its last frame is encoded.
    - Audio: one fragment per 5 AAC frames (~107 ms).
 
 ### TV timeline
@@ -137,7 +143,8 @@ Text JSON, page → phone:
   - If that fails twice in a row, the phone reopens the page through `system.launcher/open`.
 - **Page gone** (browser closed on the TV): wait `Config.reconnectSeconds` (10 s) for a new `/ws`
   connection (a new connection gets the full start-up from step 4).
-  - Otherwise end the broadcast with "The TV browser was closed".
+  - Otherwise end the broadcast with "The TV browser was closed". This is not a DLNA fallback: the
+    user closed it on purpose.
 
 ## Adaptive bitrate
 
