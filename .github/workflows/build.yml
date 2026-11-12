@@ -5,7 +5,32 @@ on:
   workflow_dispatch:
 
 jobs:
+  test:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Unit tests (MirrorCore)
+        env:
+          SAMPLE_OUT: ${{ runner.temp }}/sample-stream
+        run: |
+          set -o pipefail
+          swift test 2>&1 | tee test.log
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sample-stream
+          path: ${{ runner.temp }}/sample-stream
+          if-no-files-found: ignore
+
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: test-log
+          path: test.log
+
   build:
+    needs: test
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
