@@ -1,11 +1,16 @@
 import AVFoundation
 import CoreMedia
 
-/// Encodes ReplayKit app audio to AAC-LC (48 kHz stereo) and hands out ADTS frames on one continuous
-/// timeline. Silence fills every gap: the TV paces playback on the audio track and stalls when it stops.
+/// Encodes ReplayKit app audio to AAC-LC (48 kHz stereo) on one continuous timeline. Silence fills every
+/// gap: the TV paces playback on the audio track and stalls when it stops.
 final class AACEncoder {
-    /// (ADTS frame, presentation time in host-clock seconds) — called on the encoder queue
+    /// (ADTS frame, presentation time in host-clock seconds), for MPEG-TS — called on the encoder queue
     var onFrame: (([UInt8], Double) -> Void)?
+    /// (raw AAC frame, presentation time in host-clock seconds), for fMP4 — called on the encoder queue
+    var onPacket: (([UInt8], Double) -> Void)?
+
+    /// One encoded AAC frame of silence, for filler in browser mode.
+    static let silentPacket: [UInt8]? = makeSilentPacket()
 
     private static let rate = Config.audioSampleRate
     private static let channels = 2
@@ -57,6 +62,7 @@ final class AACEncoder {
             timer?.cancel()
             timer = nil
             onFrame = nil
+            onPacket = nil
         }
     }
 
@@ -143,7 +149,47 @@ final class AACEncoder {
             let pts = anchor + Double(packetsOut * Int64(Self.framesPerPacket)) / Self.rate
             packetsOut += 1
             onFrame?(Self.adtsHeader(payloadLength: payload.count) + payload, pts)
+            onPacket?(Array(payload), pts)
         }
+    }
+
+    /// Encodes silence with a separate converter until it yields one frame (the encoder needs a few
+    /// frames of input before its first output).
+    private static func makeSilentPacket() -> [UInt8]? {
+        guard let pcm = AVAudioFormat(commonFormat: .pcmFormatInt16, sampleRate: rate,
+                                      channels: AVAudioChannelCount(channels), interleaved: true) else { return nil }
+        var aac = AudioStreamBasicDescription(
+            mSampleRate: rate, mFormatID: kAudioFormatMPEG4AAC, mFormatFlags: 0,
+            mBytesPerPacket: 0, mFramesPerPacket: UInt32(framesPerPacket), mBytesPerFrame: 0,
+            mChannelsPerFrame: UInt32(channels), mBitsPerChannel: 0, mReserved: 0)
+        guard let format = AVAudioFormat(streamDescription: &aac),
+              let converter = AVAudioConverter(from: pcm, to: format) else { return nil }
+        converter.bitRate = Config.audioBitrate
+        for _ in 0..<16 {
+            guard let input = AVAudioPCMBuffer(pcmFormat: pcm, frameCapacity: AVAudioFrameCount(framesPerPacket)),
+                  let samples = input.int16ChannelData?[0] else { return nil }
+            samples.update(repeating: 0, count: framesPerPacket * channels)
+            input.frameLength = AVAudioFrameCount(framesPerPacket)
+            let output = AVAudioCompressedBuffer(format: converter.outputFormat, packetCapacity: 4,
+                                                 maximumPacketSize: max(converter.maximumOutputPacketSize, 2048))
+            var supplied = false
+            var error: NSError?
+            _ = converter.convert(to: output, error: &error) { _, inputStatus in
+                if supplied {
+                    inputStatus.pointee = .noDataNow
+                    return nil
+                }
+                supplied = true
+                inputStatus.pointee = .haveData
+                return input
+            }
+            if output.packetCount > 0, let d = output.packetDescriptions?[0] {
+                let base = output.data.assumingMemoryBound(to: UInt8.self)
+                return Array(UnsafeBufferPointer(start: base + Int(d.mStartOffset), count: Int(d.mDataByteSize)))
+            }
+        }
+        log.error("Could not make a silent AAC frame")
+        return nil
     }
 
     private func resample(_ samples: [Int16], from rate: Double) -> [Int16] {

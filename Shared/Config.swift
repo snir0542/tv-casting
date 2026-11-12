@@ -17,4 +17,10 @@ enum Config {
 
     static let dlnaFeatures = "DLNA.ORG_OP=00;DLNA.ORG_CI=0;DLNA.ORG_FLAGS=01700000000000000000000000000000"
     static let protocolInfo = "http-get:*:video/mpeg:" + dlnaFeatures
+
+    // Browser mode (v2.0): the TV's web browser plays the stream with ~1 s delay; DLNA is the fallback.
+    /// The TV's address, taken from the DLNA control URL above. Its control socket is ws://tvHost:3000.
+    static var tvHost: String { URL(string: tvControlURL)?.host ?? "" }
+    /// Send 1920x1080 only if the extension has at least this much memory left at start (else 1280x720).
+    static let minMemoryFor1080p = 25 * 1024 * 1024
 }
