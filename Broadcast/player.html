@@ -1,0 +1,290 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>TV Mirror</title>
+<style>
+  html, body { margin: 0; width: 100%; height: 100%; background: #000; overflow: hidden; cursor: none; }
+  video { position: absolute; left: 0; top: 0; width: 100%; height: 100%; background: #000; }
+  #msg { position: fixed; left: 0; right: 0; top: 45%; text-align: center; color: #ccc;
+         font: 40px sans-serif; z-index: 2; }
+  #dbg { position: fixed; left: 10px; bottom: 10px; color: #0f0; font: 18px monospace; z-index: 2; display: none; }
+</style>
+</head>
+<body>
+<div id="msg">Connecting to the iPhone…</div>
+<div id="dbg"></div>
+<script>
+// TV Mirror player for the LG TV browser (webOS 3.5 = Chrome 38: ES5 only).
+//
+// One WebSocket to the phone. Binary messages: first byte = track (0 video, 1 audio), the rest is
+// appended to that track's SourceBuffer. Text messages are JSON (see the design doc). The TV starts
+// playing only with > 3 s buffered, so the phone first sends filler; when only "lead" seconds of it
+// are left, this page asks for live ("golive"). That remaining lead is the delay.
+(function () {
+  'use strict';
+
+  var TICK_MS = 250;
+  var STATS_EVERY = 2;          // ticks
+  var STUCK_SECONDS = 5;        // position frozen this long with data buffered = stuck player
+  var KEEP_SECONDS = 10;        // media kept behind the position
+  var RECONNECT_MS = 2000;
+  var RELEASE_SECONDS = 1.5;    // the TV needs this long to free its decoder before a new player works
+
+  var msgEl = document.getElementById('msg');
+  var dbgEl = document.getElementById('dbg');
+  var debug = /debug/.test(location.search);
+  if (debug) { dbgEl.style.display = 'block'; }
+
+  var ws = null;
+  var cfg = { lead: 1.0, video: 'avc1.4d4028', audio: 'mp4a.40.2' };
+  var video = null, ms = null;
+  var sbs = [null, null], queues = [[], []];
+  var started = false;     // play() called
+  var everPlayed = false;  // reached HAVE_FUTURE_DATA while playing at least once
+  var armed = false;       // filler has arrived: watch for the moment to go live
+  var live = false;        // golive sent, live data expected
+  var underrun = false;    // underrun reported, waiting for the refill
+  var lastPos = -1, frozenSince = 0, tickCount = 0, stopped = false;
+  var releasedAt = 0, buildTimer = null;
+
+  function now() { return new Date().getTime() / 1000; }
+
+  function show(text) {
+    msgEl.textContent = text || '';
+    msgEl.style.display = text ? 'block' : 'none';
+  }
+
+  function send(obj) {
+    if (ws && ws.readyState === 1) {
+      try { ws.send(JSON.stringify(obj)); } catch (e) {}
+    }
+  }
+
+  function mime(track) {
+    return track === 0 ? 'video/mp4; codecs="' + cfg.video + '"' : 'audio/mp4; codecs="' + cfg.audio + '"';
+  }
+
+  function supported() {
+    return !!window.MediaSource && MediaSource.isTypeSupported(mime(0)) && MediaSource.isTypeSupported(mime(1));
+  }
+
+  // ---------- media pipeline ----------
+
+  // Drops the player and everything queued for it.
+  function teardown() {
+    if (buildTimer) { clearTimeout(buildTimer); buildTimer = null; }
+    if (video) {
+      try { video.pause(); video.removeAttribute('src'); video.load(); } catch (e) {}
+      if (video.parentNode) { video.parentNode.removeChild(video); }
+      releasedAt = now();
+    }
+    video = null; ms = null;
+    sbs = [null, null]; queues = [[], []];
+    started = false; armed = false; live = false; underrun = false;
+    lastPos = -1; frozenSince = 0;
+  }
+
+  // Builds a new player once the TV has released the previous one. Data arriving meanwhile is queued.
+  function scheduleBuild() {
+    if (video || buildTimer || stopped) { return; }
+    var wait = Math.max(0, RELEASE_SECONDS - (now() - releasedAt));
+    buildTimer = setTimeout(function () {
+      buildTimer = null;
+      if (!video && !stopped) { build(); }
+    }, wait * 1000);
+  }
+
+  function build() {
+    var el = document.createElement('video');
+    var source = new MediaSource();
+    video = el; ms = source;
+    source.addEventListener('sourceopen', function () {
+      if (ms !== source) { return; }
+      for (var t = 0; t < 2; t++) {
+        try {
+          sbs[t] = source.addSourceBuffer(mime(t));
+        } catch (e) {
+          send({ type: 'error', what: 'addSourceBuffer ' + mime(t) + ': ' + e.name });
+          return;
+        }
+        watch(t);
+        pump(t);
+      }
+    });
+    el.addEventListener('error', function () {
+      if (el !== video) { return; }
+      var code = el.error ? el.error.code : 0;
+      send({ type: 'error', what: 'media error ' + code });
+      if (everPlayed) { restart('media error ' + code); }
+    });
+    el.addEventListener('waiting', function () { if (el === video) { check(); } });
+    el.addEventListener('playing', function () { if (el === video) { underrun = false; show(''); } });
+    el.src = URL.createObjectURL(source);
+    document.body.insertBefore(el, msgEl);
+  }
+
+  function watch(t) {
+    var sb = sbs[t];
+    sb.addEventListener('updateend', function () { pump(t); });
+  }
+
+  function pump(t) {
+    var sb = sbs[t];
+    if (!sb || sb.updating || !queues[t].length) { return; }
+    try {
+      sb.appendBuffer(queues[t].shift());
+    } catch (e) {
+      queues[t] = [];
+      send({ type: 'error', what: 'appendBuffer: ' + e.name });
+    }
+  }
+
+  // Rebuild the player and ask the phone for a new timeline (init + filler from 0).
+  function restart(reason) {
+    teardown();
+    send({ type: 'stuck', pos: 0, why: reason });
+    scheduleBuild();
+  }
+
+  function bufferedEnd() {
+    var b = video ? video.buffered : null;
+    return b && b.length ? b.end(b.length - 1) : 0;
+  }
+
+  function trackEnd(t) {
+    var sb = sbs[t];
+    if (!sb) { return 0; }
+    try {
+      var b = sb.buffered;
+      return b.length ? b.end(b.length - 1) : 0;
+    } catch (e) { return 0; }
+  }
+
+  function trim() {
+    if (!video) { return; }
+    var pos = video.currentTime;
+    for (var t = 0; t < 2; t++) {
+      var sb = sbs[t];
+      if (!sb || sb.updating) { continue; }
+      try {
+        var b = sb.buffered;
+        if (b.length && pos - b.start(0) > KEEP_SECONDS + 5) { sb.remove(b.start(0), pos - KEEP_SECONDS); }
+      } catch (e) {}
+    }
+  }
+
+  // Called every tick and on 'waiting'.
+  function check() {
+    if (!video || stopped) { return; }
+    var pos = video.currentTime, end = bufferedEnd(), ahead = end - pos;
+    var playing = video.readyState >= 3 && !video.paused;
+
+    if (!started && end > 0.1) { video.play(); started = true; }
+    if (playing) { everPlayed = true; }
+
+    // The filler has arrived once there is clearly more than the lead buffered.
+    if (!live && !armed && ahead > cfg.lead + 0.5) { armed = true; }
+    if (!live && armed && playing && ahead <= cfg.lead) {
+      live = true;
+      send({ type: 'golive', v: trackEnd(0), a: trackEnd(1) });
+    }
+
+    // Stalled while live (the TV stalls with a little data left): it now waits for > 3 s of data,
+    // so ask for a refill instead of letting the delay grow by 3 s.
+    if (live && !underrun && started && video.readyState < 3 && ahead < 3) {
+      underrun = true;
+      live = false; armed = false;
+      send({ type: 'underrun', pos: pos, end: end });
+    }
+
+    // Stuck: data is there but the position does not move (seen once on this TV after an underrun).
+    if (started && ahead > 1.0 && Math.abs(pos - lastPos) < 0.01) {
+      if (!frozenSince) { frozenSince = now(); }
+      if (now() - frozenSince > STUCK_SECONDS) { restart('position frozen at ' + pos.toFixed(2)); return; }
+    } else {
+      frozenSince = 0;
+    }
+    lastPos = pos;
+  }
+
+  function tick() {
+    if (!video || stopped) { return; }
+    check();
+    if (!video) { return; }
+    tickCount++;
+    if (tickCount % STATS_EVERY === 0) {
+      var pos = video.currentTime, end = bufferedEnd();
+      send({ type: 'stats', pos: pos, end: end, lag: end - pos, rs: video.readyState, paused: video.paused });
+      if (debug) {
+        dbgEl.textContent = 'pos ' + pos.toFixed(2) + '  ahead ' + (end - pos).toFixed(2) + '  rs ' +
+          video.readyState + '  lead ' + cfg.lead + (live ? '  LIVE' : '');
+      }
+    }
+    if (tickCount % 20 === 0) { trim(); }
+  }
+
+  // ---------- connection ----------
+
+  function connect() {
+    ws = new WebSocket('ws://' + location.host + '/ws');
+    ws.binaryType = 'arraybuffer';
+    ws.onopen = function () {
+      teardown();
+      show('Connecting to the iPhone…');
+      send({ type: 'hello', mse: supported(), ua: navigator.userAgent });
+    };
+    ws.onmessage = function (e) {
+      if (typeof e.data === 'string') { return onText(e.data); }
+      var bytes = new Uint8Array(e.data);
+      var t = bytes[0];
+      if (t > 1) { return; }
+      queues[t].push(new Uint8Array(e.data, 1));
+      pump(t);
+    };
+    ws.onclose = function () {
+      ws = null;
+      if (stopped) { return; }
+      teardown();
+      show('Waiting for the iPhone…');
+      setTimeout(connect, RECONNECT_MS);
+    };
+  }
+
+  function onText(text) {
+    var m;
+    try { m = JSON.parse(text); } catch (e) { return; }
+    if (m.type === 'config') {
+      if (m.lead) { cfg.lead = m.lead; }
+      if (m.video) { cfg.video = m.video; }
+      if (m.audio) { cfg.audio = m.audio; }
+      if (!video) { scheduleBuild(); }
+    } else if (m.type === 'bye') {
+      stopped = true;
+      teardown();
+      show('Mirroring stopped');
+      try { ws.close(); } catch (e) {}
+    }
+  }
+
+  // ---------- full screen (needs a user gesture: the phone sends a remote "click") ----------
+
+  function goFullscreen() {
+    var el = document.documentElement;
+    var request = el.webkitRequestFullscreen || el.webkitRequestFullScreen || el.requestFullscreen;
+    if (request && !document.webkitFullscreenElement) {
+      try { request.call(el); } catch (e) {}
+    }
+  }
+  document.addEventListener('keydown', goFullscreen);
+  document.addEventListener('click', goFullscreen);
+  document.addEventListener('webkitfullscreenchange', function () {
+    send({ type: 'fullscreen', on: !!document.webkitFullscreenElement });
+  });
+
+  setInterval(tick, TICK_MS);
+  connect();
+})();
+</script>
+</body>
+</html>
