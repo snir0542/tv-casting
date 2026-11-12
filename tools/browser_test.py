@@ -319,8 +319,17 @@ class TVRemote:
     def click(self):
         msg = self.tv.request("pointer_1", "ssap://com.webos.service.networkinput/getPointerInputSocket", {})
         path = msg.get("payload", {}).get("socketPath", "")
-        TVSocket(self.host, path.split(":3000", 1)[1]).send_text("type:click\n\n")
+        pointer = TVSocket(self.host, path.split(":3000", 1)[1])
+        # The pointer may rest on the browser's own toolbar (a click there reloaded the page once):
+        # move to the top-left corner, then to the middle of the screen, then click.
+        pointer.send_text("type:move\ndx:-3000\ndy:-3000\ndown:0\n\n")
+        time.sleep(0.2)
+        pointer.send_text("type:move\ndx:960\ndy:540\ndown:0\n\n")
+        time.sleep(0.3)
+        pointer.send_text("type:click\n\n")
         print("sent a click for full screen")
+        time.sleep(1.5)  # closing the pointer socket at once can drop the click
+        pointer.sock.close()
 
 
 # ---------------------------------------------------------------- one page connection (the phone's job)
@@ -409,6 +418,8 @@ class Session:
         elif kind == "fullscreen":
             self.stats.fullscreen = m.get("on")
             print(f"[page] fullscreen {m.get('on')}")
+        elif kind == "key":
+            print(f"[page] key {m.get('code')}")
         elif kind == "error":
             print(f"[page] ERROR {m.get('what')}")
 

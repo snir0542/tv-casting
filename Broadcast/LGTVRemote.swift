@@ -75,7 +75,8 @@ final class LGTVRemote {
         }
     }
 
-    /// A pointer click on the TV, which the page receives as a key press.
+    /// A pointer click in the middle of the TV screen (the page's full-screen gesture).
+    /// Tested on the TV: without moving the pointer first, the click missed the page.
     func click() {
         request(SSAP.pointerURI) { [weak self] reply in
             guard let self, case .response(_, let payload) = reply,
@@ -87,8 +88,12 @@ final class LGTVRemote {
             pointer.stateUpdateHandler = { state in
                 switch state {
                 case .ready:
-                    self.sendText(SSAP.clickCommand, on: pointer)
-                    self.queue.asyncAfter(deadline: .now() + 1) { pointer.cancel() }
+                    let steps = SSAP.pointerToCentre + [SSAP.clickCommand]
+                    for (i, step) in steps.enumerated() {
+                        self.queue.asyncAfter(deadline: .now() + 0.25 * Double(i)) { self.sendText(step, on: pointer) }
+                    }
+                    // closing the pointer socket at once can drop the click
+                    self.queue.asyncAfter(deadline: .now() + 0.25 * Double(steps.count) + 1.5) { pointer.cancel() }
                 case .failed:
                     pointer.cancel()
                 default:

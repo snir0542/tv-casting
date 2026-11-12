@@ -276,8 +276,14 @@
       try { request.call(el); } catch (e) {}
     }
   }
-  document.addEventListener('keydown', goFullscreen);
-  document.addEventListener('click', goFullscreen);
+  document.addEventListener('keydown', function (e) {
+    send({ type: 'key', code: e.keyCode });
+    goFullscreen();
+  });
+  document.addEventListener('click', function () {
+    send({ type: 'key', code: 'click' });
+    goFullscreen();
+  });
   document.addEventListener('webkitfullscreenchange', function () {
     send({ type: 'fullscreen', on: !!document.webkitFullscreenElement });
   });

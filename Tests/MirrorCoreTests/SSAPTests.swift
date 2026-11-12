@@ -48,6 +48,13 @@ final class SSAPTests: XCTestCase {
         XCTAssertNil(SSAP.parse("not json"))
     }
 
+    func testPointerCommands() {
+        XCTAssertEqual(SSAP.clickCommand, "type:click\n\n")
+        XCTAssertEqual(SSAP.pointerMove(dx: -3000, dy: 5), "type:move\ndx:-3000\ndy:5\ndown:0\n\n")
+        XCTAssertEqual(SSAP.pointerToCentre, ["type:move\ndx:-3000\ndy:-3000\ndown:0\n\n",
+                                              "type:move\ndx:960\ndy:540\ndown:0\n\n"])
+    }
+
     func testPointerPath() {
         XCTAssertEqual(SSAP.pointerPath(fromSocketPath: "ws://192.168.1.122:3000/resources/46055f/netinput.pointer.sock"),
                        "/resources/46055f/netinput.pointer.sock")

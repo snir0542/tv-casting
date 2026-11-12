@@ -12,8 +12,13 @@ enum SSAPReply: Equatable {
 enum SSAP {
     static let openURI = "ssap://system.launcher/open"
     static let pointerURI = "ssap://com.webos.service.networkinput/getPointerInputSocket"
-    /// Sent as text on the pointer socket; a web page receives it as a click / OK key press.
+    /// Sent as text on the pointer socket: a click where the pointer is.
     static let clickCommand = "type:click\n\n"
+
+    /// Relative pointer move. The pointer may rest on the TV browser's own toolbar, where a click can
+    /// reload the page, so it is moved to the top-left corner and then to the screen centre first.
+    static func pointerMove(dx: Int, dy: Int) -> String { "type:move\ndx:\(dx)\ndy:\(dy)\ndown:0\n\n" }
+    static let pointerToCentre = [pointerMove(dx: -3000, dy: -3000), pointerMove(dx: 960, dy: 540)]
 
     static func register(clientKey: String?) -> String {
         var payload = (try? JSONSerialization.jsonObject(with: Data(registerPayload.utf8))) as? [String: Any] ?? [:]
