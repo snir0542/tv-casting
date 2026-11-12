@@ -6,8 +6,8 @@ options:
 settings:
   base:
     SWIFT_VERSION: "5.0"
-    MARKETING_VERSION: "1.1"
-    CURRENT_PROJECT_VERSION: "2"
+    MARKETING_VERSION: "2.0"
+    CURRENT_PROJECT_VERSION: "3"
     TARGETED_DEVICE_FAMILY: "1"
 targets:
   TVMirror:
@@ -36,7 +36,15 @@ targets:
   TVMirrorBroadcast:
     type: app-extension
     platform: iOS
-    sources: [Broadcast, Shared]
+    # Core = the platform-independent part, also built as the MirrorCore package for `swift test`.
+    # Broadcast/player.html is copied as a resource (the page the TV browser loads).
+    sources:
+      - path: Broadcast
+        excludes: ["player.html"]
+      - Shared
+      - Core
+      - path: Broadcast/player.html
+        buildPhase: resources
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.tvmirror.app.broadcast

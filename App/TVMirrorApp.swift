@@ -15,7 +15,7 @@ struct ContentView: View {
         VStack(spacing: 24) {
             Text("TV Mirror").font(.largeTitle.bold())
 
-            Text("1. בדיקת חיבור (בפעם הראשונה תאשר גישה לרשת המקומית)\n2. לחיצה על העיגול ← Start Broadcast")
+            Text("1. בדיקת חיבור (בפעם הראשונה תאשר גישה לרשת המקומית)\n2. לחיצה על העיגול ← Start Broadcast\n3. בפעם הראשונה הטלוויזיה תשאל אם לאפשר את המכשיר – אשר בשלט")
                 .multilineTextAlignment(.center)
 
             Button("בדיקת חיבור לטלוויזיה") {
